@@ -8,13 +8,21 @@ Prototype 2D top-down tank game on HTML5 Canvas.
    - `python3 -m http.server 8080`
    - Open `http://localhost:8080`
 
-## Controls
+## Controls (Desktop)
 - Move: `W A S D` or arrow keys
 - Main shot: `Space` or left mouse button
-- HE weapon (if unlocked): `E`
+- AP shell (if unlocked): `E`
 - Airstrike (if unlocked): `Q`
 - Upgrade selection: `1` / `2` / `3` / `4`
 - Restart after defeat: `R`
+
+## Controls (iPhone / Safari)
+- Left joystick: movement.
+- Right joystick: turret aiming.
+- `ОГОНЬ`: main shot (hold for continuous fire).
+- `AP`: AP shell shot.
+- `АВИА`: call airstrike.
+- Upgrade cards and restart can be selected by touch.
 
 ## Gameplay rules
 - Stone wall: destroyed in **2 shots**.
@@ -28,7 +36,7 @@ Prototype 2D top-down tank game on HTML5 Canvas.
 - Armor crates restore blue armor shields (after armor upgrade is unlocked).
 - Ammo and fuel are limited.
 - Every **10 kills** gives an upgrade choice.
-- Upgrades include fire rate, armor, HE weapon, and airstrike.
-- HE and airstrike charges refill by kills after unlock.
-- Fog of war limits vision; map is explored gradually.
+- Upgrades include fire rate, armor, AP shell, and airstrike.
+- AP and airstrike charges refill by kills after unlock.
+- Edge haze is used as a light visual battlefield effect.
 - Every next level has a bigger maze; enemies become faster and more dangerous.

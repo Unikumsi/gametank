@@ -1,5 +1,14 @@
 const canvas = document.getElementById("gameCanvas");
 const hudCanvas = document.getElementById("hudCanvas");
+const gameWrap = document.querySelector(".game-wrap");
+const mobileControlsRoot = document.getElementById("mobileControls");
+const moveJoystickEl = document.getElementById("moveJoystick");
+const aimJoystickEl = document.getElementById("aimJoystick");
+const fireBtnEl = document.getElementById("fireBtn");
+const apBtnEl = document.getElementById("apBtn");
+const airBtnEl = document.getElementById("airBtn");
+const moveKnobEl = moveJoystickEl ? moveJoystickEl.querySelector(".joystick-knob") : null;
+const aimKnobEl = aimJoystickEl ? aimJoystickEl.querySelector(".joystick-knob") : null;
 
 const ctx = canvas.getContext("2d");
 const hudCtx = hudCanvas.getContext("2d");
@@ -27,6 +36,15 @@ const SIGHT_BLOCKING_TILES = new Set([TILE_STONE, TILE_BRICK, TILE_BORDER]);
 const keys = {};
 const justPressed = new Set();
 const mouse = { x: 0, y: 0, down: false };
+
+let isTouchDevice = false;
+const touchInput = {
+  move: { pointerId: null, x: 0, y: 0, mag: 0 },
+  aim: { pointerId: null, x: 0, y: 0, mag: 0 },
+  fireHeld: false,
+  heavyQueued: false,
+  airstrikeQueued: false,
+};
 
 let level = 1;
 let nextUpgradeKillMark = 10;
@@ -235,6 +253,138 @@ function drawWrappedText(c, text, x, y, maxWidth, lineHeight, maxLines = 3) {
   }
 }
 
+function detectTouchDevice() {
+  return (
+    (window.matchMedia && window.matchMedia("(pointer: coarse)").matches) ||
+    (navigator.maxTouchPoints || 0) > 0
+  );
+}
+
+function setJoystickKnobOffset(knobEl, dx, dy) {
+  if (!knobEl) {
+    return;
+  }
+  knobEl.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+}
+
+function resetTouchStick(kind) {
+  const stick = touchInput[kind];
+  stick.pointerId = null;
+  stick.x = 0;
+  stick.y = 0;
+  stick.mag = 0;
+  if (kind === "move") {
+    setJoystickKnobOffset(moveKnobEl, 0, 0);
+  } else {
+    setJoystickKnobOffset(aimKnobEl, 0, 0);
+  }
+}
+
+function refreshInputMode() {
+  isTouchDevice = detectTouchDevice();
+  document.body.classList.toggle("touch-device", isTouchDevice);
+  if (mobileControlsRoot) {
+    mobileControlsRoot.style.display = isTouchDevice ? "block" : "";
+  }
+  if (!isTouchDevice) {
+    resetTouchStick("move");
+    resetTouchStick("aim");
+    touchInput.fireHeld = false;
+    touchInput.heavyQueued = false;
+    touchInput.airstrikeQueued = false;
+  }
+}
+
+function updateTouchStickFromClient(kind, clientX, clientY) {
+  const stickEl = kind === "move" ? moveJoystickEl : aimJoystickEl;
+  const knobEl = kind === "move" ? moveKnobEl : aimKnobEl;
+  if (!stickEl) {
+    return;
+  }
+
+  const rect = stickEl.getBoundingClientRect();
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  const radius = Math.max(20, rect.width * 0.38);
+
+  let dx = clientX - cx;
+  let dy = clientY - cy;
+  const dist = Math.hypot(dx, dy);
+
+  if (dist > radius) {
+    const scale = radius / dist;
+    dx *= scale;
+    dy *= scale;
+  }
+
+  setJoystickKnobOffset(knobEl, dx, dy);
+
+  const stick = touchInput[kind];
+  stick.x = dx / radius;
+  stick.y = dy / radius;
+  stick.mag = clamp(Math.hypot(stick.x, stick.y), 0, 1);
+}
+
+function safeSetPointerCapture(target, pointerId) {
+  if (!target || typeof target.setPointerCapture !== "function") {
+    return;
+  }
+  try {
+    target.setPointerCapture(pointerId);
+  } catch {
+    // Some Safari builds may reject capture; non-critical.
+  }
+}
+
+function safeReleasePointerCapture(target, pointerId) {
+  if (!target || typeof target.releasePointerCapture !== "function") {
+    return;
+  }
+  try {
+    if (typeof target.hasPointerCapture === "function" && !target.hasPointerCapture(pointerId)) {
+      return;
+    }
+    target.releasePointerCapture(pointerId);
+  } catch {
+    // Ignore.
+  }
+}
+
+function updateMouseFromClient(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  mouse.x = ((clientX - rect.left) / rect.width) * canvas.width;
+  mouse.y = ((clientY - rect.top) / rect.height) * canvas.height;
+}
+
+function toWorldPoint(screenX, screenY) {
+  return {
+    x: screenX + camera.x,
+    y: screenY + camera.y,
+  };
+}
+
+function getPlayerAimWorldTarget() {
+  if (isTouchDevice && touchInput.aim.mag > 0.16) {
+    const aimDistance = 300;
+    return {
+      x: player.x + touchInput.aim.x * aimDistance,
+      y: player.y + touchInput.aim.y * aimDistance,
+    };
+  }
+  return toWorldMouse();
+}
+
+function getAirstrikeWorldTarget() {
+  if (isTouchDevice && touchInput.aim.mag > 0.16) {
+    const strikeDistance = 260;
+    return {
+      x: clamp(player.x + touchInput.aim.x * strikeDistance, 0, mapWidth),
+      y: clamp(player.y + touchInput.aim.y * strikeDistance, 0, mapHeight),
+    };
+  }
+  return toWorldMouse();
+}
+
 function loadLeaderboard() {
   const fallback = {
     bestLevel: 1,
@@ -380,24 +530,21 @@ function playSound(name) {
 }
 
 function toWorldMouse() {
-  return {
-    x: mouse.x + camera.x,
-    y: mouse.y + camera.y,
-  };
+  return toWorldPoint(mouse.x, mouse.y);
 }
 
 function resizeCanvas() {
-  const pad = 24;
-  const maxW = 1180;
-  const maxGameH = 660;
-  const hudH = window.innerWidth < 860 ? 96 : 104;
+  refreshInputMode();
 
-  const width = Math.max(640, Math.min(window.innerWidth - pad, maxW));
-  const gameH = Math.max(360, Math.min(window.innerHeight - 210, maxGameH));
+  const gameRect = gameWrap ? gameWrap.getBoundingClientRect() : canvas.getBoundingClientRect();
+  const hudRect = hudCanvas.getBoundingClientRect();
+
+  const width = Math.max(300, Math.floor(gameRect.width || window.innerWidth - 12));
+  const gameH = Math.max(220, Math.floor(gameRect.height || window.innerHeight - 200));
+  const hudH = Math.max(70, Math.floor(hudRect.height || (isTouchDevice ? 84 : 104)));
 
   canvas.width = width;
   canvas.height = gameH;
-
   hudCanvas.width = width;
   hudCanvas.height = hudH;
 }
@@ -1191,7 +1338,7 @@ function tryCallAirstrike(nowMs) {
     return;
   }
 
-  const target = toWorldMouse();
+  const target = getAirstrikeWorldTarget();
   scheduleAirstrike(target.x, target.y);
   playSound("boom");
 
@@ -1776,30 +1923,40 @@ function updatePlayer(dt, nowMs) {
 
   let mvx = 0;
   let mvy = 0;
+  if (isTouchDevice && touchInput.move.mag > 0.08) {
+    mvx = touchInput.move.x;
+    mvy = touchInput.move.y;
+  } else {
+    if (up) {
+      mvy -= 1;
+    }
+    if (down) {
+      mvy += 1;
+    }
+    if (left) {
+      mvx -= 1;
+    }
+    if (right) {
+      mvx += 1;
+    }
 
-  if (up) {
-    mvy -= 1;
-  }
-  if (down) {
-    mvy += 1;
-  }
-  if (left) {
-    mvx -= 1;
-  }
-  if (right) {
-    mvx += 1;
+    const len = Math.hypot(mvx, mvy);
+    if (len > 0) {
+      mvx /= len;
+      mvy /= len;
+    }
   }
 
-  const len = Math.hypot(mvx, mvy);
-  if (len > 0) {
-    mvx /= len;
-    mvy /= len;
+  const moveLen = Math.hypot(mvx, mvy);
+  if (moveLen > 1) {
+    mvx /= moveLen;
+    mvy /= moveLen;
   }
 
-  const worldMouse = toWorldMouse();
-  player.turretAngle = Math.atan2(worldMouse.y - player.y, worldMouse.x - player.x);
+  const aimTarget = getPlayerAimWorldTarget();
+  player.turretAngle = Math.atan2(aimTarget.y - player.y, aimTarget.x - player.x);
 
-  if (player.fuel > 0 && len > 0) {
+  if (player.fuel > 0 && moveLen > 0.01) {
     const dx = mvx * player.speed * dt;
     const dy = mvy * player.speed * dt;
     const moved = moveWithCollisions(player, dx, dy);
@@ -1811,17 +1968,20 @@ function updatePlayer(dt, nowMs) {
     }
   }
 
-  if (mouse.down || keys.Space) {
+  if (mouse.down || keys.Space || (isTouchDevice && touchInput.fireHeld)) {
     tryShootPlayer(nowMs);
   }
 
-  if (justPressed.has("KeyE")) {
+  if (justPressed.has("KeyE") || touchInput.heavyQueued) {
     tryFireHeavy(nowMs);
   }
 
-  if (justPressed.has("KeyQ")) {
+  if (justPressed.has("KeyQ") || touchInput.airstrikeQueued) {
     tryCallAirstrike(nowMs);
   }
+
+  touchInput.heavyQueued = false;
+  touchInput.airstrikeQueued = false;
 }
 
 function handleUpgradeInput() {
@@ -2457,6 +2617,31 @@ function drawWorld() {
     drawTank(player, PLAYER_STYLE);
   }
 
+  if (isTouchDevice && touchInput.aim.mag > 0.16) {
+    const aimTarget = getPlayerAimWorldTarget();
+    const pulse = 0.5 + Math.sin(performance.now() * 0.01) * 0.5;
+    const r = 10 + pulse * 2;
+
+    ctx.beginPath();
+    ctx.arc(aimTarget.x, aimTarget.y, r, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(230, 247, 236, 0.8)";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(aimTarget.x - r - 6, aimTarget.y);
+    ctx.lineTo(aimTarget.x - r + 2, aimTarget.y);
+    ctx.moveTo(aimTarget.x + r - 2, aimTarget.y);
+    ctx.lineTo(aimTarget.x + r + 6, aimTarget.y);
+    ctx.moveTo(aimTarget.x, aimTarget.y - r - 6);
+    ctx.lineTo(aimTarget.x, aimTarget.y - r + 2);
+    ctx.moveTo(aimTarget.x, aimTarget.y + r - 2);
+    ctx.lineTo(aimTarget.x, aimTarget.y + r + 6);
+    ctx.strokeStyle = "rgba(186, 231, 193, 0.75)";
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+  }
+
   for (const bullet of bullets) {
     ctx.beginPath();
     ctx.arc(bullet.x, bullet.y, bullet.radius, 0, Math.PI * 2);
@@ -2592,83 +2777,111 @@ function drawHud() {
   const c = hudCtx;
   const w = hudCanvas.width;
   const h = hudCanvas.height;
+  const compact = w < 860 || h < 96;
+  const uiScale = compact ? clamp(w / 860, 0.68, 1) : 1;
+  const lw = w / uiScale;
+  const lh = h / uiScale;
 
   c.clearRect(0, 0, w, h);
+  c.save();
+  c.scale(uiScale, uiScale);
 
   c.fillStyle = "rgba(6, 11, 12, 0.87)";
-  c.fillRect(0, 0, w, h);
+  c.fillRect(0, 0, lw, lh);
   c.strokeStyle = "rgba(213, 238, 239, 0.2)";
-  c.strokeRect(0.5, 0.5, w - 1, h - 1);
+  c.strokeRect(0.5, 0.5, lw - 1, lh - 1);
 
   const sec1X = 16;
-  const sec2X = Math.floor(w * 0.28);
-  const sec3X = Math.floor(w * 0.52);
-  const sec4X = Math.floor(w * 0.76);
+  const sec2X = Math.floor(lw * 0.28);
+  const sec3X = Math.floor(lw * 0.52);
+  const sec4X = Math.floor(lw * 0.76);
 
   c.fillStyle = "#dfecee";
-  c.font = "13px Trebuchet MS";
+  c.font = `${compact ? 12 : 13}px Trebuchet MS`;
 
   c.fillText("ЗДОРОВЬЕ", sec1X, 17);
   for (let i = 0; i < player.maxHealth; i += 1) {
-    drawHeartIcon(c, sec1X + i * 24, 21, 18, i < player.health ? 1 : 0);
+    drawHeartIcon(c, sec1X + i * (compact ? 21 : 24), 21, compact ? 16 : 18, i < player.health ? 1 : 0);
   }
 
   c.fillStyle = "#b8d2ff";
   c.fillText("БРОНЯ", sec1X, 51);
   const armorSlots = Math.min(10, player.maxArmor);
   for (let i = 0; i < armorSlots; i += 1) {
-    drawShieldIcon(c, sec1X + i * 15, 56, 12, i < player.armor);
+    drawShieldIcon(c, sec1X + i * (compact ? 13 : 15), 56, compact ? 10 : 12, i < player.armor);
   }
   if (player.maxArmor > armorSlots) {
     c.fillStyle = "#8ab4ff";
-    c.fillText(`+${player.maxArmor - armorSlots}`, sec1X + armorSlots * 15 + 4, 69);
+    c.fillText(`+${player.maxArmor - armorSlots}`, sec1X + armorSlots * (compact ? 13 : 15) + 4, 69);
   }
 
   c.fillStyle = "#dfecee";
   c.fillText("ТОПЛИВО", sec2X, 17);
-  const fuelCells = 10;
+  const fuelCells = compact ? 8 : 10;
   const fuelFill = (player.fuel / player.maxFuel) * fuelCells;
   for (let i = 0; i < fuelCells; i += 1) {
-    drawFuelCellIcon(c, sec2X + i * 16, 24, 12, clamp(fuelFill - i, 0, 1));
+    drawFuelCellIcon(c, sec2X + i * (compact ? 14 : 16), 24, compact ? 11 : 12, clamp(fuelFill - i, 0, 1));
   }
   c.fillStyle = "#d8a76a";
   c.fillText(`${Math.floor(player.fuel)}/${player.maxFuel}`, sec2X, 70);
 
   c.fillStyle = "#dfecee";
   c.fillText("БОЕЗАПАС", sec3X, 17);
-  const ammoCells = 12;
+  const ammoCells = compact ? 9 : 12;
   const ammoFill = (player.ammo / player.maxAmmo) * ammoCells;
   for (let i = 0; i < ammoCells; i += 1) {
-    drawBulletIcon(c, sec3X + i * 13, 24, 16, clamp(ammoFill - i, 0, 1));
+    drawBulletIcon(c, sec3X + i * (compact ? 11 : 13), 24, compact ? 14 : 16, clamp(ammoFill - i, 0, 1));
   }
   c.fillStyle = "#7cd1ff";
   c.fillText(`${player.ammo}/${player.maxAmmo}`, sec3X, 70);
 
   c.fillStyle = "#deedf0";
-  c.fillText(`УРОВЕНЬ ${level}`, sec4X, 16);
-  c.fillText(`ВРАГИ ${enemies.length}`, sec4X, 33);
-  c.fillText(`ФРАГИ ${player.totalKills}`, sec4X, 50);
+  if (compact) {
+    c.fillText(`УР ${level}`, sec4X, 16);
+    c.fillText(`ВР ${enemies.length}`, sec4X, 33);
+    c.fillText(`ФР ${player.totalKills}`, sec4X, 50);
+  } else {
+    c.fillText(`УРОВЕНЬ ${level}`, sec4X, 16);
+    c.fillText(`ВРАГИ ${enemies.length}`, sec4X, 33);
+    c.fillText(`ФРАГИ ${player.totalKills}`, sec4X, 50);
+  }
 
   const toNext = nextUpgradeKillMark - player.totalKills;
   c.fillStyle = toNext > 0 ? "#bcd3d5" : "#8fceff";
   c.fillText(
-    toNext > 0 ? `УЛУЧШЕНИЕ ЧЕРЕЗ ${toNext}` : `УЛУЧШЕНИЕ ГОТОВО x${pendingUpgrades}`,
+    compact
+      ? toNext > 0
+        ? `АП ${toNext}`
+        : `АПГОТОВО x${pendingUpgrades}`
+      : toNext > 0
+        ? `УЛУЧШЕНИЕ ЧЕРЕЗ ${toNext}`
+        : `УЛУЧШЕНИЕ ГОТОВО x${pendingUpgrades}`,
     sec4X,
     68,
   );
   c.fillStyle = "#a9c0c2";
-  c.fillText(`РЕКОРД: ур.${leaderboard.bestLevel} / фр.${leaderboard.bestKills}`, sec4X, 84);
+  c.fillText(
+    compact
+      ? `РЕК ${leaderboard.bestLevel}/${leaderboard.bestKills}`
+      : `РЕКОРД: ур.${leaderboard.bestLevel} / фр.${leaderboard.bestKills}`,
+    sec4X,
+    84,
+  );
 
-  const abilityY = 84;
+  const abilityY = compact ? 82 : 84;
   c.fillStyle = "#ddeef2";
   c.fillText("AP", sec2X, abilityY);
   if (player.heavyUnlocked) {
     for (let i = 0; i < player.heavyMaxCharges; i += 1) {
-      drawChargeDot(c, sec2X + 24 + i * 15, abilityY - 4, i < player.heavyCharges, "#f6d68b", "#5f5542");
+      drawChargeDot(c, sec2X + 24 + i * (compact ? 13 : 15), abilityY - 4, i < player.heavyCharges, "#f6d68b", "#5f5542");
     }
     if (player.heavyCharges < player.heavyMaxCharges) {
       c.fillStyle = "#d0bfa1";
-      c.fillText(`${player.heavyProgress}/${player.heavyKillsPerCharge}`, sec2X + 24 + player.heavyMaxCharges * 16 + 4, abilityY);
+      c.fillText(
+        `${player.heavyProgress}/${player.heavyKillsPerCharge}`,
+        sec2X + 24 + player.heavyMaxCharges * (compact ? 14 : 16) + 4,
+        abilityY,
+      );
     }
   } else {
     c.fillStyle = "#8d9ca0";
@@ -2679,15 +2892,39 @@ function drawHud() {
   c.fillText("АВИА", sec3X, abilityY);
   if (player.airstrikeUnlocked) {
     for (let i = 0; i < player.airstrikeMaxCharges; i += 1) {
-      drawChargeDot(c, sec3X + 28 + i * 15, abilityY - 4, i < player.airstrikeCharges, "#ff9f88", "#614840");
+      drawChargeDot(c, sec3X + 28 + i * (compact ? 13 : 15), abilityY - 4, i < player.airstrikeCharges, "#ff9f88", "#614840");
     }
     if (player.airstrikeCharges < player.airstrikeMaxCharges) {
       c.fillStyle = "#d9b2aa";
-      c.fillText(`${player.airstrikeProgress}/${player.airstrikeKillsPerCharge}`, sec3X + 28 + player.airstrikeMaxCharges * 16 + 4, abilityY);
+      c.fillText(
+        `${player.airstrikeProgress}/${player.airstrikeKillsPerCharge}`,
+        sec3X + 28 + player.airstrikeMaxCharges * (compact ? 14 : 16) + 4,
+        abilityY,
+      );
     }
   } else {
     c.fillStyle = "#8d9ca0";
     c.fillText("закрыто", sec3X + 28, abilityY);
+  }
+
+  c.restore();
+
+  if (isTouchDevice) {
+    if (apBtnEl) {
+      apBtnEl.textContent = player.heavyUnlocked
+        ? `AP ${player.heavyCharges}/${Math.max(1, player.heavyMaxCharges)}`
+        : "AP LOCK";
+      apBtnEl.disabled = !player.heavyUnlocked;
+      apBtnEl.style.opacity = player.heavyUnlocked ? "1" : "0.55";
+    }
+
+    if (airBtnEl) {
+      airBtnEl.textContent = player.airstrikeUnlocked
+        ? `АВИА ${player.airstrikeCharges}/${Math.max(1, player.airstrikeMaxCharges)}`
+        : "АВИА LOCK";
+      airBtnEl.disabled = !player.airstrikeUnlocked;
+      airBtnEl.style.opacity = player.airstrikeUnlocked ? "1" : "0.55";
+    }
   }
 }
 
@@ -2728,34 +2965,90 @@ function getUpgradeCards() {
   ];
 }
 
+function getUpgradeCardLayout() {
+  const cards = getUpgradeCards();
+  const narrow = canvas.width < 640;
+
+  if (narrow) {
+    const gap = 10;
+    const cardW = Math.max(210, Math.min(340, canvas.width - 30));
+    const cardH = Math.max(88, Math.min(120, Math.floor(canvas.height * 0.16)));
+    const totalH = cards.length * cardH + (cards.length - 1) * gap;
+    const startX = Math.floor((canvas.width - cardW) / 2);
+    const startY = Math.max(112, Math.floor((canvas.height - totalH) / 2));
+
+    return cards.map((card, i) => ({
+      ...card,
+      x: startX,
+      y: startY + i * (cardH + gap),
+      w: cardW,
+      h: cardH,
+    }));
+  }
+
+  const gap = Math.max(12, Math.floor(canvas.width * 0.02));
+  const cardW = Math.max(220, Math.min(330, Math.floor((canvas.width - 120 - gap) / 2)));
+  const cardH = Math.max(126, Math.floor(canvas.height * 0.24));
+  const startX = Math.floor(canvas.width / 2 - (cardW * 2 + gap) / 2);
+  const startY = Math.floor(canvas.height / 2 - (cardH * 2 + gap) / 2) + 18;
+
+  return cards.map((card, i) => {
+    const col = i % 2;
+    const row = Math.floor(i / 2);
+    return {
+      ...card,
+      x: startX + col * (cardW + gap),
+      y: startY + row * (cardH + gap),
+      w: cardW,
+      h: cardH,
+    };
+  });
+}
+
+function trySelectUpgradeAtCanvasPoint(x, y) {
+  if (pendingUpgrades <= 0) {
+    return false;
+  }
+
+  const layout = getUpgradeCardLayout();
+  for (const card of layout) {
+    if (x >= card.x && x <= card.x + card.w && y >= card.y && y <= card.y + card.h) {
+      applyUpgrade(card.id);
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function drawUpgradeOverlay() {
   ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  const cards = getUpgradeCards();
+  const cards = getUpgradeCardLayout();
+  const compact = canvas.width < 720;
+  const titleFont = compact ? 26 : 34;
+  const subtitleFont = compact ? 14 : 16;
+  const cardTitleFont = compact ? 18 : 21;
+  const cardDescFont = compact ? 13 : 15;
+  const cardHintFont = compact ? 12 : 13;
+  const lineHeight = compact ? 18 : 22;
 
   ctx.fillStyle = "#f3ffff";
   ctx.textAlign = "center";
-  ctx.font = "bold 34px Trebuchet MS";
+  ctx.font = `bold ${titleFont}px Trebuchet MS`;
   ctx.fillText("Выбор Улучшения", canvas.width / 2, 72);
 
-  ctx.font = "16px Trebuchet MS";
+  ctx.font = `${subtitleFont}px Trebuchet MS`;
   ctx.fillStyle = "#b7cecf";
   ctx.fillText(`Ожидает улучшений: ${pendingUpgrades}`, canvas.width / 2, 98);
 
-  const gap = 18;
-  const cardW = Math.min(330, Math.floor((canvas.width - 120 - gap) / 2));
-  const cardH = 150;
-  const startX = Math.floor(canvas.width / 2 - (cardW * 2 + gap) / 2);
-  const startY = Math.floor(canvas.height / 2 - (cardH * 2 + gap) / 2) + 18;
-
   for (let i = 0; i < cards.length; i += 1) {
     const card = cards[i];
-    const col = i % 2;
-    const row = Math.floor(i / 2);
-
-    const x = startX + col * (cardW + gap);
-    const y = startY + row * (cardH + gap);
+    const x = card.x;
+    const y = card.y;
+    const cardW = card.w;
+    const cardH = card.h;
 
     const grad = ctx.createLinearGradient(x, y, x + cardW, y + cardH);
     grad.addColorStop(0, "rgba(20, 32, 35, 0.92)");
@@ -2786,16 +3079,16 @@ function drawUpgradeOverlay() {
 
     ctx.textAlign = "start";
     ctx.fillStyle = "#ebfbfc";
-    ctx.font = "bold 21px Trebuchet MS";
+    ctx.font = `bold ${cardTitleFont}px Trebuchet MS`;
     ctx.fillText(card.title, x + 48, y + 35);
 
-    ctx.font = "15px Trebuchet MS";
+    ctx.font = `${cardDescFont}px Trebuchet MS`;
     ctx.fillStyle = "#bad0d4";
-    drawWrappedText(ctx, card.desc, x + 20, y + 66, cardW - 40, 22, 3);
+    drawWrappedText(ctx, card.desc, x + 20, y + 62, cardW - 40, lineHeight, 3);
 
     ctx.fillStyle = card.accent;
-    ctx.font = "13px Trebuchet MS";
-    ctx.fillText(`Нажмите ${card.key}`, x + 20, y + cardH - 16);
+    ctx.font = `${cardHintFont}px Trebuchet MS`;
+    ctx.fillText(isTouchDevice ? "Коснитесь карты" : `Нажмите ${card.key}`, x + 20, y + cardH - 16);
 
     ctx.textAlign = "center";
   }
@@ -2807,20 +3100,29 @@ function drawGameOverOverlay() {
   ctx.fillStyle = "rgba(0, 0, 0, 0.66)";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
+  const compact = canvas.width < 720;
+  const titleFont = compact ? 30 : 42;
+  const mainFont = compact ? 16 : 20;
+  const listFont = compact ? 13 : 16;
+
   ctx.fillStyle = "#fff0f0";
   ctx.textAlign = "center";
-  ctx.font = "bold 42px Trebuchet MS";
+  ctx.font = `bold ${titleFont}px Trebuchet MS`;
   ctx.fillText("Танк Уничтожен", canvas.width / 2, canvas.height / 2 - 34);
 
-  ctx.font = "20px Trebuchet MS";
+  ctx.font = `${mainFont}px Trebuchet MS`;
   ctx.fillText(
     `Достигнут уровень ${level}, фрагов ${player.totalKills}`,
     canvas.width / 2,
     canvas.height / 2,
   );
-  ctx.fillText("Нажмите R для новой игры", canvas.width / 2, canvas.height / 2 + 34);
+  ctx.fillText(
+    isTouchDevice ? "Коснитесь экрана для новой игры" : "Нажмите R для новой игры",
+    canvas.width / 2,
+    canvas.height / 2 + 34,
+  );
 
-  ctx.font = "16px Trebuchet MS";
+  ctx.font = `${listFont}px Trebuchet MS`;
   ctx.fillStyle = "#c8dbdd";
   ctx.fillText("Лидерборд:", canvas.width / 2, canvas.height / 2 + 64);
 
@@ -2877,23 +3179,193 @@ window.addEventListener("keyup", (event) => {
   keys[event.code] = false;
 });
 
-canvas.addEventListener("mousemove", (event) => {
-  const rect = canvas.getBoundingClientRect();
-  mouse.x = ((event.clientX - rect.left) / rect.width) * canvas.width;
-  mouse.y = ((event.clientY - rect.top) / rect.height) * canvas.height;
-});
+function bindJoystick(joystickEl, kind) {
+  if (!joystickEl) {
+    return;
+  }
 
-canvas.addEventListener("mousedown", (event) => {
-  ensureAudioReady();
+  joystickEl.addEventListener("pointerdown", (event) => {
+    if (!isTouchDevice || event.pointerType !== "touch") {
+      return;
+    }
 
-  if (event.button === 0) {
-    mouse.down = true;
+    ensureAudioReady();
+    event.preventDefault();
+
+    const stick = touchInput[kind];
+    stick.pointerId = event.pointerId;
+    updateTouchStickFromClient(kind, event.clientX, event.clientY);
+    safeSetPointerCapture(joystickEl, event.pointerId);
+  });
+
+  joystickEl.addEventListener("pointermove", (event) => {
+    const stick = touchInput[kind];
+    if (stick.pointerId !== event.pointerId) {
+      return;
+    }
+
+    event.preventDefault();
+    updateTouchStickFromClient(kind, event.clientX, event.clientY);
+  });
+
+  const releaseStick = (event) => {
+    const stick = touchInput[kind];
+    if (stick.pointerId !== event.pointerId) {
+      return;
+    }
+
+    event.preventDefault();
+    resetTouchStick(kind);
+    safeReleasePointerCapture(joystickEl, event.pointerId);
+  };
+
+  joystickEl.addEventListener("pointerup", releaseStick);
+  joystickEl.addEventListener("pointercancel", releaseStick);
+}
+
+function bindHoldButton(buttonEl, onStart, onEnd) {
+  if (!buttonEl) {
+    return;
+  }
+
+  buttonEl.addEventListener("pointerdown", (event) => {
+    ensureAudioReady();
+    event.preventDefault();
+    onStart();
+    buttonEl.classList.add("is-active");
+    safeSetPointerCapture(buttonEl, event.pointerId);
+  });
+
+  const finish = (event) => {
+    event.preventDefault();
+    onEnd();
+    buttonEl.classList.remove("is-active");
+    safeReleasePointerCapture(buttonEl, event.pointerId);
+  };
+
+  buttonEl.addEventListener("pointerup", finish);
+  buttonEl.addEventListener("pointercancel", finish);
+  buttonEl.addEventListener("pointerleave", () => {
+    onEnd();
+    buttonEl.classList.remove("is-active");
+  });
+}
+
+function bindTapButton(buttonEl, onTap) {
+  if (!buttonEl) {
+    return;
+  }
+
+  buttonEl.addEventListener("pointerdown", (event) => {
+    ensureAudioReady();
+    event.preventDefault();
+    onTap();
+    buttonEl.classList.add("is-active");
+    safeSetPointerCapture(buttonEl, event.pointerId);
+  });
+
+  const finish = (event) => {
+    event.preventDefault();
+    buttonEl.classList.remove("is-active");
+    safeReleasePointerCapture(buttonEl, event.pointerId);
+  };
+
+  buttonEl.addEventListener("pointerup", finish);
+  buttonEl.addEventListener("pointercancel", finish);
+}
+
+bindJoystick(moveJoystickEl, "move");
+bindJoystick(aimJoystickEl, "aim");
+
+bindHoldButton(
+  fireBtnEl,
+  () => {
+    touchInput.fireHeld = true;
+  },
+  () => {
+    touchInput.fireHeld = false;
+  },
+);
+
+bindTapButton(apBtnEl, () => {
+  if (player.heavyUnlocked) {
+    touchInput.heavyQueued = true;
   }
 });
 
-window.addEventListener("mouseup", (event) => {
-  if (event.button === 0) {
+bindTapButton(airBtnEl, () => {
+  if (player.airstrikeUnlocked) {
+    touchInput.airstrikeQueued = true;
+  }
+});
+
+canvas.addEventListener("pointermove", (event) => {
+  updateMouseFromClient(event.clientX, event.clientY);
+});
+
+canvas.addEventListener("pointerdown", (event) => {
+  ensureAudioReady();
+  updateMouseFromClient(event.clientX, event.clientY);
+
+  if (pendingUpgrades > 0) {
+    event.preventDefault();
     mouse.down = false;
+    trySelectUpgradeAtCanvasPoint(mouse.x, mouse.y);
+    return;
+  }
+
+  if (gameOver) {
+    if (event.button === 0 || event.pointerType === "touch") {
+      event.preventDefault();
+      mouse.down = false;
+      resetGame();
+    }
+    return;
+  }
+
+  if (event.button === 0 || event.pointerType === "touch") {
+    mouse.down = true;
+    if (event.pointerType === "touch") {
+      event.preventDefault();
+      tryShootPlayer(performance.now());
+    }
+  }
+});
+
+canvas.addEventListener("pointerup", (event) => {
+  if (event.button === 0 || event.pointerType === "touch") {
+    mouse.down = false;
+  }
+});
+
+canvas.addEventListener("pointercancel", () => {
+  mouse.down = false;
+});
+
+window.addEventListener("pointerup", () => {
+  mouse.down = false;
+});
+
+canvas.addEventListener("contextmenu", (event) => {
+  event.preventDefault();
+});
+
+window.addEventListener("blur", () => {
+  mouse.down = false;
+  touchInput.fireHeld = false;
+  resetTouchStick("move");
+  resetTouchStick("aim");
+  if (fireBtnEl) {
+    fireBtnEl.classList.remove("is-active");
+  }
+  if (apBtnEl) {
+    apBtnEl.classList.remove("is-active");
+  }
+  if (airBtnEl) {
+    airBtnEl.classList.remove("is-active");
+  }
+  for (const key of Object.keys(keys)) {
+    keys[key] = false;
   }
 });
 
@@ -2914,6 +3386,8 @@ function gameLoop(now) {
   render();
 
   justPressed.clear();
+  touchInput.heavyQueued = false;
+  touchInput.airstrikeQueued = false;
   requestAnimationFrame(gameLoop);
 }
 
