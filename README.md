@@ -17,12 +17,13 @@ Prototype 2D top-down tank game on HTML5 Canvas.
 - Restart after defeat: `R`
 
 ## Controls (iPhone / Safari)
-- Left joystick: movement.
-- Right joystick: turret aiming.
+- Left thumb on left side of screen: movement (floating joystick appears under finger).
+- Right thumb on right side of screen: turret aiming (floating joystick appears under finger).
 - `ОГОНЬ`: main shot (hold for continuous fire).
 - `AP`: AP shell shot.
 - `АВИА`: call airstrike.
 - Upgrade cards and restart can be selected by touch.
+- Recommended: play in landscape orientation for better view and control.
 
 ## Gameplay rules
 - Stone wall: destroyed in **2 shots**.

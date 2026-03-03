@@ -39,12 +39,14 @@ const mouse = { x: 0, y: 0, down: false };
 
 let isTouchDevice = false;
 const touchInput = {
-  move: { pointerId: null, x: 0, y: 0, mag: 0 },
-  aim: { pointerId: null, x: 0, y: 0, mag: 0 },
+  move: { pointerId: null, x: 0, y: 0, mag: 0, centerX: 0, centerY: 0, radius: 44 },
+  aim: { pointerId: null, x: 0, y: 0, mag: 0, centerX: 0, centerY: 0, radius: 44 },
   fireHeld: false,
   heavyQueued: false,
   airstrikeQueued: false,
 };
+
+let fxQuality = 1;
 
 let level = 1;
 let nextUpgradeKillMark = 10;
@@ -273,15 +275,67 @@ function resetTouchStick(kind) {
   stick.x = 0;
   stick.y = 0;
   stick.mag = 0;
-  if (kind === "move") {
-    setJoystickKnobOffset(moveKnobEl, 0, 0);
-  } else {
-    setJoystickKnobOffset(aimKnobEl, 0, 0);
+  stick.centerX = 0;
+  stick.centerY = 0;
+
+  const stickEl = kind === "move" ? moveJoystickEl : aimJoystickEl;
+  const knobEl = kind === "move" ? moveKnobEl : aimKnobEl;
+  setJoystickKnobOffset(knobEl, 0, 0);
+
+  if (stickEl) {
+    stickEl.classList.remove("active");
+  }
+}
+
+function placeFloatingJoystick(kind, clientX, clientY) {
+  if (!mobileControlsRoot) {
+    return;
+  }
+
+  const stickEl = kind === "move" ? moveJoystickEl : aimJoystickEl;
+  if (!stickEl) {
+    return;
+  }
+
+  const rootRect = mobileControlsRoot.getBoundingClientRect();
+  const size = Math.max(84, stickEl.getBoundingClientRect().width || 112);
+  const left = clamp(clientX - rootRect.left - size / 2, 4, rootRect.width - size - 4);
+  const top = clamp(clientY - rootRect.top - size / 2, 4, rootRect.height - size - 4);
+
+  stickEl.style.left = `${left}px`;
+  stickEl.style.top = `${top}px`;
+  stickEl.classList.add("active");
+
+  const stick = touchInput[kind];
+  stick.centerX = rootRect.left + left + size / 2;
+  stick.centerY = rootRect.top + top + size / 2;
+  stick.radius = Math.max(22, size * 0.38);
+}
+
+function beginTouchStick(kind, pointerId, clientX, clientY) {
+  const stick = touchInput[kind];
+  if (stick.pointerId !== null && stick.pointerId !== pointerId) {
+    return false;
+  }
+
+  stick.pointerId = pointerId;
+  placeFloatingJoystick(kind, clientX, clientY);
+  updateTouchStickFromClient(kind, clientX, clientY);
+  return true;
+}
+
+function releaseTouchPointer(pointerId) {
+  if (touchInput.move.pointerId === pointerId) {
+    resetTouchStick("move");
+  }
+  if (touchInput.aim.pointerId === pointerId) {
+    resetTouchStick("aim");
   }
 }
 
 function refreshInputMode() {
   isTouchDevice = detectTouchDevice();
+  fxQuality = isTouchDevice ? 0.72 : 1;
   document.body.classList.toggle("touch-device", isTouchDevice);
   if (mobileControlsRoot) {
     mobileControlsRoot.style.display = isTouchDevice ? "block" : "";
@@ -296,19 +350,16 @@ function refreshInputMode() {
 }
 
 function updateTouchStickFromClient(kind, clientX, clientY) {
-  const stickEl = kind === "move" ? moveJoystickEl : aimJoystickEl;
+  const stick = touchInput[kind];
   const knobEl = kind === "move" ? moveKnobEl : aimKnobEl;
-  if (!stickEl) {
+  if (!knobEl || !stick.centerX || !stick.centerY) {
     return;
   }
 
-  const rect = stickEl.getBoundingClientRect();
-  const cx = rect.left + rect.width / 2;
-  const cy = rect.top + rect.height / 2;
-  const radius = Math.max(20, rect.width * 0.38);
+  const radius = stick.radius || 44;
 
-  let dx = clientX - cx;
-  let dy = clientY - cy;
+  let dx = clientX - stick.centerX;
+  let dy = clientY - stick.centerY;
   const dist = Math.hypot(dx, dy);
 
   if (dist > radius) {
@@ -319,7 +370,6 @@ function updateTouchStickFromClient(kind, clientX, clientY) {
 
   setJoystickKnobOffset(knobEl, dx, dy);
 
-  const stick = touchInput[kind];
   stick.x = dx / radius;
   stick.y = dy / radius;
   stick.mag = clamp(Math.hypot(stick.x, stick.y), 0, 1);
@@ -537,16 +587,40 @@ function resizeCanvas() {
   refreshInputMode();
 
   const gameRect = gameWrap ? gameWrap.getBoundingClientRect() : canvas.getBoundingClientRect();
-  const hudRect = hudCanvas.getBoundingClientRect();
+  const availableW = Math.max(300, Math.floor(gameRect.width || window.innerWidth - 12));
+  const availableH = Math.max(220, Math.floor(gameRect.height || window.innerHeight - 200));
+  const portraitTouch = isTouchDevice && window.innerHeight > window.innerWidth;
+  const targetAspect = portraitTouch ? 4 / 3 : isTouchDevice ? 16 / 9 : 3 / 2;
 
-  const width = Math.max(300, Math.floor(gameRect.width || window.innerWidth - 12));
-  const gameH = Math.max(220, Math.floor(gameRect.height || window.innerHeight - 200));
-  const hudH = Math.max(70, Math.floor(hudRect.height || (isTouchDevice ? 84 : 104)));
+  let viewW = availableW;
+  let viewH = Math.floor(viewW / targetAspect);
+  if (viewH > availableH) {
+    viewH = availableH;
+    viewW = Math.floor(viewH * targetAspect);
+  }
 
-  canvas.width = width;
-  canvas.height = gameH;
-  hudCanvas.width = width;
+  const hudH = isTouchDevice
+    ? clamp(Math.floor(viewW * 0.13), 66, 90)
+    : clamp(Math.floor(viewW * 0.11), 92, 108);
+
+  canvas.width = viewW;
+  canvas.height = viewH;
+  canvas.style.width = `${viewW}px`;
+  canvas.style.height = `${viewH}px`;
+
+  hudCanvas.width = viewW;
   hudCanvas.height = hudH;
+  hudCanvas.style.width = `${viewW}px`;
+  hudCanvas.style.height = `${hudH}px`;
+
+  if (mobileControlsRoot) {
+    const offsetX = Math.floor((availableW - viewW) / 2);
+    const offsetY = Math.floor((availableH - viewH) / 2);
+    mobileControlsRoot.style.left = `${offsetX}px`;
+    mobileControlsRoot.style.top = `${offsetY}px`;
+    mobileControlsRoot.style.width = `${viewW}px`;
+    mobileControlsRoot.style.height = `${viewH}px`;
+  }
 }
 
 function isInside(x, y) {
@@ -798,41 +872,58 @@ function worldOffset(entity, forward, side) {
 }
 
 function pushTrackMark(entity, side) {
+  const maxTrackMarks = isTouchDevice ? 260 : 900;
+  if (trackMarks.length >= maxTrackMarks) {
+    trackMarks.splice(0, trackMarks.length - maxTrackMarks + 1);
+  }
+
   const p = worldOffset(entity, -(entity.radius * 0.95), side);
   trackMarks.push({
     x: p.x,
     y: p.y,
     angle: entity.bodyAngle,
     width: entity.isBoss ? 8 : 6,
-    life: 6.6,
-    maxLife: 6.6,
+    life: 6.6 * (0.72 + fxQuality * 0.28),
+    maxLife: 6.6 * (0.72 + fxQuality * 0.28),
   });
 }
 
 function pushSmoke(entity, intensity = 1) {
+  if (Math.random() > fxQuality) {
+    return;
+  }
+
+  const maxSmoke = isTouchDevice ? 130 : 360;
+  if (smokeParticles.length >= maxSmoke) {
+    smokeParticles.splice(0, smokeParticles.length - maxSmoke + 1);
+  }
+
   const p = worldOffset(entity, -(entity.radius + 4), 0);
+  const life = rand(0.35, 0.65) * (0.75 + fxQuality * 0.25);
   smokeParticles.push({
     x: p.x + rand(-2, 2),
     y: p.y + rand(-2, 2),
     vx: rand(-8, 8),
     vy: rand(-18, -8),
-    size: rand(4, 8) * intensity,
-    life: rand(0.35, 0.65),
-    maxLife: rand(0.35, 0.65),
+    size: rand(4, 8) * intensity * (0.72 + fxQuality * 0.28),
+    life,
+    maxLife: life,
     tint: entity.isBoss ? "rgba(90, 90, 90, 1)" : "rgba(110, 118, 120, 1)",
   });
 }
 
 function emitMotionEffects(entity, moved, dt) {
   entity.trackEmit = (entity.trackEmit || 0) + moved;
-  if (entity.trackEmit > (entity.isBoss ? 14 : 11)) {
+  const trackStep = (entity.isBoss ? 14 : 11) / clamp(fxQuality, 0.4, 1);
+  if (entity.trackEmit > trackStep) {
     pushTrackMark(entity, entity.isBoss ? 11 : 9);
     pushTrackMark(entity, entity.isBoss ? -11 : -9);
     entity.trackEmit = 0;
   }
 
   entity.smokeEmit = (entity.smokeEmit || 0) + dt;
-  if (moved > 0.12 && entity.smokeEmit > (entity.isBoss ? 0.08 : 0.12)) {
+  const smokeStep = (entity.isBoss ? 0.08 : 0.12) / clamp(fxQuality, 0.45, 1);
+  if (moved > 0.12 && entity.smokeEmit > smokeStep) {
     pushSmoke(entity, entity.isBoss ? 1.25 : 1);
     entity.smokeEmit = 0;
   }
@@ -879,6 +970,19 @@ function createWreckFromEnemy(enemy) {
 }
 
 function updateWorldParticles(dt) {
+  if (trackMarks.length > (isTouchDevice ? 260 : 900)) {
+    trackMarks.splice(0, trackMarks.length - (isTouchDevice ? 260 : 900));
+  }
+  if (smokeParticles.length > (isTouchDevice ? 130 : 360)) {
+    smokeParticles.splice(0, smokeParticles.length - (isTouchDevice ? 130 : 360));
+  }
+  if (turretDebris.length > (isTouchDevice ? 60 : 150)) {
+    turretDebris.splice(0, turretDebris.length - (isTouchDevice ? 60 : 150));
+  }
+  if (wrecks.length > (isTouchDevice ? 36 : 90)) {
+    wrecks.splice(0, wrecks.length - (isTouchDevice ? 36 : 90));
+  }
+
   for (let i = trackMarks.length - 1; i >= 0; i -= 1) {
     const m = trackMarks[i];
     m.life -= dt;
@@ -2549,6 +2653,8 @@ function drawSmokeParticles() {
 
 function drawEdgeHaze() {
   const maxR = Math.max(canvas.width, canvas.height) * 0.9;
+  const edgeAlpha = isTouchDevice ? 0.1 : 0.14;
+  const midAlpha = isTouchDevice ? 0.035 : 0.05;
   const grad = ctx.createRadialGradient(
     player.x,
     player.y,
@@ -2558,8 +2664,8 @@ function drawEdgeHaze() {
     maxR,
   );
   grad.addColorStop(0, "rgba(255, 255, 255, 0)");
-  grad.addColorStop(0.68, "rgba(255, 255, 255, 0.05)");
-  grad.addColorStop(1, "rgba(255, 255, 255, 0.14)");
+  grad.addColorStop(0.68, `rgba(255, 255, 255, ${midAlpha})`);
+  grad.addColorStop(1, `rgba(255, 255, 255, ${edgeAlpha})`);
 
   ctx.fillStyle = grad;
   ctx.fillRect(camera.x, camera.y, canvas.width, canvas.height);
@@ -2852,7 +2958,7 @@ function drawHud() {
     compact
       ? toNext > 0
         ? `АП ${toNext}`
-        : `АПГОТОВО x${pendingUpgrades}`
+        : `АП ГОТОВО x${pendingUpgrades}`
       : toNext > 0
         ? `УЛУЧШЕНИЕ ЧЕРЕЗ ${toNext}`
         : `УЛУЧШЕНИЕ ГОТОВО x${pendingUpgrades}`,
@@ -3179,48 +3285,28 @@ window.addEventListener("keyup", (event) => {
   keys[event.code] = false;
 });
 
-function bindJoystick(joystickEl, kind) {
-  if (!joystickEl) {
-    return;
+function assignTouchStickFromCanvas(event) {
+  const rect = canvas.getBoundingClientRect();
+  const localX = event.clientX - rect.left;
+  const preferMove = localX < rect.width * 0.5;
+
+  if (preferMove) {
+    if (touchInput.move.pointerId === null) {
+      return beginTouchStick("move", event.pointerId, event.clientX, event.clientY);
+    }
+    if (touchInput.aim.pointerId === null) {
+      return beginTouchStick("aim", event.pointerId, event.clientX, event.clientY);
+    }
+    return false;
   }
 
-  joystickEl.addEventListener("pointerdown", (event) => {
-    if (!isTouchDevice || event.pointerType !== "touch") {
-      return;
-    }
-
-    ensureAudioReady();
-    event.preventDefault();
-
-    const stick = touchInput[kind];
-    stick.pointerId = event.pointerId;
-    updateTouchStickFromClient(kind, event.clientX, event.clientY);
-    safeSetPointerCapture(joystickEl, event.pointerId);
-  });
-
-  joystickEl.addEventListener("pointermove", (event) => {
-    const stick = touchInput[kind];
-    if (stick.pointerId !== event.pointerId) {
-      return;
-    }
-
-    event.preventDefault();
-    updateTouchStickFromClient(kind, event.clientX, event.clientY);
-  });
-
-  const releaseStick = (event) => {
-    const stick = touchInput[kind];
-    if (stick.pointerId !== event.pointerId) {
-      return;
-    }
-
-    event.preventDefault();
-    resetTouchStick(kind);
-    safeReleasePointerCapture(joystickEl, event.pointerId);
-  };
-
-  joystickEl.addEventListener("pointerup", releaseStick);
-  joystickEl.addEventListener("pointercancel", releaseStick);
+  if (touchInput.aim.pointerId === null) {
+    return beginTouchStick("aim", event.pointerId, event.clientX, event.clientY);
+  }
+  if (touchInput.move.pointerId === null) {
+    return beginTouchStick("move", event.pointerId, event.clientX, event.clientY);
+  }
+  return false;
 }
 
 function bindHoldButton(buttonEl, onStart, onEnd) {
@@ -3274,9 +3360,6 @@ function bindTapButton(buttonEl, onTap) {
   buttonEl.addEventListener("pointercancel", finish);
 }
 
-bindJoystick(moveJoystickEl, "move");
-bindJoystick(aimJoystickEl, "aim");
-
 bindHoldButton(
   fireBtnEl,
   () => {
@@ -3300,6 +3383,19 @@ bindTapButton(airBtnEl, () => {
 });
 
 canvas.addEventListener("pointermove", (event) => {
+  if (isTouchDevice && event.pointerType === "touch") {
+    if (event.pointerId === touchInput.move.pointerId) {
+      event.preventDefault();
+      updateTouchStickFromClient("move", event.clientX, event.clientY);
+      return;
+    }
+    if (event.pointerId === touchInput.aim.pointerId) {
+      event.preventDefault();
+      updateTouchStickFromClient("aim", event.clientX, event.clientY);
+      return;
+    }
+  }
+
   updateMouseFromClient(event.clientX, event.clientY);
 });
 
@@ -3323,27 +3419,41 @@ canvas.addEventListener("pointerdown", (event) => {
     return;
   }
 
-  if (event.button === 0 || event.pointerType === "touch") {
+  if (isTouchDevice && event.pointerType === "touch") {
+    event.preventDefault();
+    assignTouchStickFromCanvas(event);
+    return;
+  }
+
+  if (event.button === 0) {
     mouse.down = true;
-    if (event.pointerType === "touch") {
-      event.preventDefault();
-      tryShootPlayer(performance.now());
-    }
   }
 });
 
 canvas.addEventListener("pointerup", (event) => {
-  if (event.button === 0 || event.pointerType === "touch") {
+  if (event.pointerType === "touch") {
+    event.preventDefault();
+    releaseTouchPointer(event.pointerId);
+    return;
+  }
+  if (event.button === 0) {
     mouse.down = false;
   }
 });
 
-canvas.addEventListener("pointercancel", () => {
+canvas.addEventListener("pointercancel", (event) => {
+  if (event.pointerType === "touch") {
+    releaseTouchPointer(event.pointerId);
+  }
   mouse.down = false;
 });
 
-window.addEventListener("pointerup", () => {
-  mouse.down = false;
+window.addEventListener("pointerup", (event) => {
+  if (event.pointerType === "touch") {
+    releaseTouchPointer(event.pointerId);
+  } else {
+    mouse.down = false;
+  }
 });
 
 canvas.addEventListener("contextmenu", (event) => {

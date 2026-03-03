@@ -14,24 +14,20 @@
       <div class="game-wrap">
         <canvas id="gameCanvas" width="960" height="640"></canvas>
         <div id="mobileControls" class="mobile-controls">
-          <div class="control-side left-side">
-            <div id="moveJoystick" class="joystick" aria-label="Джойстик движения">
-              <div class="joystick-ring"></div>
-              <div class="joystick-knob"></div>
-              <div class="joystick-label">ХОД</div>
-            </div>
+          <div id="moveJoystick" class="joystick floating-stick" aria-label="Джойстик движения">
+            <div class="joystick-ring"></div>
+            <div class="joystick-knob"></div>
+            <div class="joystick-label">ХОД</div>
           </div>
-          <div class="control-side right-side">
-            <div id="aimJoystick" class="joystick" aria-label="Джойстик прицеливания">
-              <div class="joystick-ring"></div>
-              <div class="joystick-knob"></div>
-              <div class="joystick-label">ПРИЦЕЛ</div>
-            </div>
-            <div class="action-stack">
-              <button id="fireBtn" class="touch-btn fire-btn" type="button">ОГОНЬ</button>
-              <button id="apBtn" class="touch-btn sec-btn" type="button">AP</button>
-              <button id="airBtn" class="touch-btn sec-btn" type="button">АВИА</button>
-            </div>
+          <div id="aimJoystick" class="joystick floating-stick" aria-label="Джойстик прицеливания">
+            <div class="joystick-ring"></div>
+            <div class="joystick-knob"></div>
+            <div class="joystick-label">ПРИЦЕЛ</div>
+          </div>
+          <div class="action-cluster">
+            <button id="apBtn" class="touch-btn sec-btn" type="button">AP</button>
+            <button id="fireBtn" class="touch-btn fire-btn" type="button">ОГОНЬ</button>
+            <button id="airBtn" class="touch-btn sec-btn" type="button">АВИА</button>
           </div>
         </div>
       </div>
@@ -40,7 +36,7 @@
         Движение: WASD / Стрелки | Огонь: Space/ЛКМ | AP-снаряд: E | Авиаудар: Q | Улучшения: 1/2/3/4 | Рестарт: R
       </div>
       <div class="hint mobile-hint">
-        Левый джойстик: движение. Правый: поворот башни. Кнопки: ОГОНЬ / AP / АВИА.
+        Левый палец (левая часть): ход. Правый (правая часть): прицел. Кнопки: ОГОНЬ / AP / АВИА. Лучше играть в горизонтальном положении.
       </div>
     </div>
     <script src="./game.js"></script>

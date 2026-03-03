@@ -47,11 +47,15 @@ body {
 .game-wrap {
   position: relative;
   min-height: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
 }
 
 #gameCanvas,
 #hudCanvas {
-  width: 100%;
+  width: auto;
+  max-width: 100%;
   display: block;
   border-radius: 14px;
   border: 1px solid var(--line);
@@ -59,7 +63,8 @@ body {
 }
 
 #gameCanvas {
-  height: 100%;
+  height: auto;
+  max-height: 100%;
   background: #0c1511;
   touch-action: none;
 }
@@ -94,32 +99,31 @@ body {
 
 .mobile-controls {
   position: absolute;
-  inset: 0;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
   pointer-events: none;
   display: none;
 }
 
-.control-side {
+.floating-stick {
   position: absolute;
-  bottom: calc(12px + env(safe-area-inset-bottom, 0px));
-  display: flex;
-  align-items: flex-end;
-  gap: 12px;
+  opacity: 0;
+  transform: scale(0.92);
+  transition: opacity 90ms ease, transform 90ms ease;
+  pointer-events: none;
 }
 
-.left-side {
-  left: clamp(8px, 2vw, 18px);
-}
-
-.right-side {
-  right: clamp(8px, 2vw, 18px);
+.floating-stick.active {
+  opacity: 1;
+  transform: scale(1);
 }
 
 .joystick {
   width: clamp(96px, 19vw, 136px);
   height: clamp(96px, 19vw, 136px);
-  position: relative;
-  pointer-events: auto;
+  position: absolute;
   touch-action: none;
 }
 
@@ -161,9 +165,16 @@ body {
   color: rgba(233, 247, 235, 0.76);
 }
 
-.action-stack {
+.action-cluster {
+  position: absolute;
+  right: clamp(10px, 2.4vw, 18px);
+  bottom: calc(12px + env(safe-area-inset-bottom, 0px));
   display: grid;
-  grid-template-rows: auto auto auto;
+  grid-template-columns: auto auto;
+  grid-template-rows: auto auto;
+  grid-template-areas:
+    "ap fire"
+    "air fire";
   gap: 8px;
   pointer-events: auto;
 }
@@ -193,6 +204,24 @@ body {
 
 .touch-btn:disabled {
   filter: saturate(0.3);
+}
+
+.fire-btn {
+  grid-area: fire;
+  min-width: clamp(86px, 18vw, 120px);
+  min-height: clamp(88px, 18vw, 120px);
+  border-radius: 999px;
+  box-shadow:
+    0 8px 18px rgba(0, 0, 0, 0.4),
+    inset 0 0 0 2px rgba(255, 255, 255, 0.12);
+}
+
+#apBtn {
+  grid-area: ap;
+}
+
+#airBtn {
+  grid-area: air;
 }
 
 .fire-btn {
@@ -245,7 +274,7 @@ body.touch-device #hudCanvas {
     font-size: 12px;
   }
 
-  .action-stack {
+  .action-cluster {
     gap: 6px;
   }
 }
